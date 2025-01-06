@@ -1,0 +1,77 @@
+name: vite + react CI
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout branch
+        uses: actions/checkout@v4
+
+      - name: install node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18" # node version Setting
+
+      #   - name: resolve rollup issue; install rollup
+      #     run: npm install -f @rollup/rollup-linux-x64-gnu --save-optional
+
+      #   - name: npm install; use forced option because toast ui issue;
+      #     run: npm install -f
+
+      - name: npm install
+        run: npm install
+
+      - name: npm build use to vite
+        run: npm run build
+
+      # 이유: aws 방화벽에 github ip 등록을 위함.
+      - name: get GitHub IP
+        id: ip
+        uses: haythem/public-ip@v1.2
+
+      # AWS 접근 권한 취득을 위한 IAM 설정
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_ACCESS_KEY_SECRET }}
+          aws-region: ap-northeast-2
+
+      # github ip 파일 내려 받기 위해 인바운드 규칙 추가.
+      - name: Add GitHub IP to AWS
+        run: |
+          aws ec2 authorize-security-group-ingress --group-id ${{ secrets.AWS_SG_ID }} --protocol tcp --port 22 --cidr ${{ steps.ip.outputs.ipv4 }}/32
+
+      # 파일 받아오기 진행.
+      - name: AWS EC2 Connection and file transfer
+        # uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.AWS_EC2_HOST }}
+          username: ${{ secrets.AWS_EC2_ID }}
+          password: ${{ secrets.AWS_EC2_PASSWORD }}
+          port: ${{secrets.AWS_EC2_SSH_PORT}}
+          source: "dist/*"
+          target: "/tmp/"
+
+      # 웹 루트에는 권한 이슈 때문에 바로 못 받아옴. ssh action 을 통해 sudo 옵션으로 추가.
+      - name: move to file because need to sudo
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.AWS_EC2_HOST }}
+          username: ${{ secrets.AWS_EC2_ID }}
+          password: ${{ secrets.AWS_EC2_PASSWORD }}
+          port: ${{secrets.AWS_EC2_SSH_PORT}}
+          script: |
+            sudo rm -rf /var/www/reddit-clone/build/*
+            sudo mv /tmp/dist/* /var/www/reddit-clone/build/
+            sudo rm -rf /tmp/dist
+
+      # 등록했던 인바운드 규칙 삭제.
+      - name: Remove IP FROM security group
+        run: |
+          aws ec2 revoke-security-group-ingress --group-id ${{ secrets.AWS_SG_ID }} --protocol tcp --port 22 --cidr ${{ steps.ip.outputs.ipv4 }}/32
